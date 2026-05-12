@@ -43,9 +43,9 @@ Two boards, one cable between them.
 
 | GPIO | Function |
 |---|---|
-| 4 | INMP441 WS (LRCK) |
-| 5 | INMP441 SCK (BCLK) |
-| 6 | INMP441 SD (data) |
+| 4 | INMP441 SD (data) |
+| 5 | INMP441 WS (LRCK) |
+| 6 | INMP441 SCK (BCLK) |
 | 7 | UART TX → Controller RX (GPIO 16) |
 | 10 | UART RX ← Controller TX (GPIO 17) |
 
@@ -208,13 +208,6 @@ pio run -e listener -t upload
 
 # Open serial monitor for listener calibration
 pio device monitor -e listener
-```
-
-If `ledcAttachChannel` fails to compile, pin the platform version in `platformio.ini`:
-
-```ini
-[env:controller]
-platform = espressif32@6.9.0
 ```
 
 ---

@@ -15,7 +15,9 @@
 //
 //  UART PROTOCOL (115200 8N1)
 //  --------------------------
-//  Controller → Listener:  'S' = start listening,  'R' = reset
+//  Controller → Listener:  'C' = start noise floor calibration (red countdown)
+//                          'S' = start listening (green phase)
+//                          'R' = reset
 //  Listener   → Controller: '1'/'2'/'3' = threshold reached
 //
 // =============================================================
@@ -23,6 +25,9 @@
 #include <Arduino.h>
 
 // ---- CONFIG -------------------------------------------------
+
+// Print state transitions to USB serial; type 1/2/3 + Enter to simulate listener
+#define DEBUG_MODE            false
 
 // Red countdown flash (3 stages × STAGE_MS = total red intro)
 #define RED_FLASH_HZ_1        10      // Hz stage 1
@@ -38,13 +43,13 @@
 #define GREEN_PULSE_HZ        0.75f   // cycles per second
 
 // Post-listen hold
-#define RED_HOLD_MS           12000
+#define RED_HOLD_MS           4000
 
 // Delay between sequential bank illuminations
-#define SEQUENTIAL_DELAY_MS   2000
+#define SEQUENTIAL_DELAY_MS   500
 
 // Illuminate animation (white banks turning on)
-#define ILLUMINATE_RAMP_MS    500     // total fade-in duration
+#define ILLUMINATE_RAMP_MS    300     // total fade-in duration
 #define ILLUMINATE_FLASH_HZ   10     // strobe rate during ramp
 
 // Fade-out (white banks, then ceiling, one by one)
@@ -118,16 +123,29 @@ static uint32_t fadeStart   = 0;
 // ---- HELPERS ------------------------------------------------
 static void setPwm(int ch, uint32_t duty) {
     outPwm[ch] = duty;
-    ledcWriteChannel(ch, duty);
+    ledcWrite(ch, duty);
 }
 
 static void allOff() {
     for (int ch = 0; ch < 5; ch++) setPwm(ch, 0);
 }
 
+static const char* stateName(State s) {
+    switch (s) {
+        case IDLE:           return "IDLE";
+        case RED_FLASH:      return "RED_FLASH";
+        case GREEN_LISTEN:   return "GREEN_LISTEN";
+        case RED_HOLD:       return "RED_HOLD";
+        case FADE_OUT:       return "FADE_OUT";
+        case EMERGENCY_STOP: return "EMERGENCY_STOP";
+        default:             return "UNKNOWN";
+    }
+}
+
 static void enterState(State s) {
     state      = s;
     stateStart = millis();
+    if (DEBUG_MODE) Serial.printf("[STATE] %s\n", stateName(s));
 }
 
 // Bank channel lookup [1..3]
@@ -210,7 +228,7 @@ static void handleButton(uint32_t now) {
                 memset(bankAnim,     0, sizeof(bankAnim));
                 litUpTo = 0;
                 allOff();
-                ListenerSerial.print('R');
+                ListenerSerial.print('C');
                 enterState(RED_FLASH);
             }
         }
@@ -241,10 +259,13 @@ static void updateRedFlash(uint32_t now) {
 static void updateGreenListen(uint32_t now) {
     uint32_t elapsed = now - stateStart;
 
-    // Consume incoming threshold events
+    // Consume incoming threshold events (real listener)
     while (ListenerSerial.available()) {
         char c = (char)ListenerSerial.read();
-        if (c >= '1' && c <= '3') levelReached[c - '0'] = true;
+        if (c >= '1' && c <= '3') {
+            levelReached[c - '0'] = true;
+            if (DEBUG_MODE) Serial.printf("[LISTENER] threshold %c received\n", c);
+        }
     }
 
     updateSequentialBanks(now);
@@ -330,7 +351,18 @@ static void updateEmergencyStop(uint32_t now) {
 
     float t = 1.0f - (float)elapsed / EMERGENCY_FADE_MS;
     for (int ch = 0; ch < 5; ch++) {
-        ledcWriteChannel(ch, (uint32_t)(t * fadeFromPwm[ch]));
+        ledcWrite(ch, (uint32_t)(t * fadeFromPwm[ch]));
+    }
+}
+
+// ---- DEBUG SERIAL -------------------------------------------
+static void handleDebugSerial() {
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c >= '1' && c <= '3') {
+            levelReached[c - '0'] = true;
+            Serial.printf("[DEBUG] Injected threshold level %c\n", c);
+        }
     }
 }
 
@@ -341,18 +373,31 @@ void setup() {
 
     pinMode(PIN_BUTTON, INPUT_PULLUP);
 
-    ledcAttachChannel(PIN_CEILING_RED,   LEDC_FREQ, LEDC_RES, CH_CEILING_RED);
-    ledcAttachChannel(PIN_CEILING_GREEN, LEDC_FREQ, LEDC_RES, CH_CEILING_GREEN);
-    ledcAttachChannel(PIN_CHEER,         LEDC_FREQ, LEDC_RES, CH_CHEER);
-    ledcAttachChannel(PIN_HOLLER,        LEDC_FREQ, LEDC_RES, CH_HOLLER);
-    ledcAttachChannel(PIN_SHOUT,         LEDC_FREQ, LEDC_RES, CH_SHOUT);
+    ledcSetup(CH_CEILING_RED,   LEDC_FREQ, LEDC_RES);
+    ledcSetup(CH_CEILING_GREEN, LEDC_FREQ, LEDC_RES);
+    ledcSetup(CH_CHEER,         LEDC_FREQ, LEDC_RES);
+    ledcSetup(CH_HOLLER,        LEDC_FREQ, LEDC_RES);
+    ledcSetup(CH_SHOUT,         LEDC_FREQ, LEDC_RES);
+
+    ledcAttachPin(PIN_CEILING_RED,   CH_CEILING_RED);
+    ledcAttachPin(PIN_CEILING_GREEN, CH_CEILING_GREEN);
+    ledcAttachPin(PIN_CHEER,         CH_CHEER);
+    ledcAttachPin(PIN_HOLLER,        CH_HOLLER);
+    ledcAttachPin(PIN_SHOUT,         CH_SHOUT);
 
     allOff();
+
+    if (DEBUG_MODE) {
+        Serial.println("Controller ready. DEBUG_MODE on.");
+        Serial.println("Press button to start. Type 1/2/3 + Enter to simulate listener thresholds.");
+        Serial.printf("[STATE] %s\n", stateName(state));
+    }
 }
 
 void loop() {
     uint32_t now = millis();
     handleButton(now);
+    if (DEBUG_MODE) handleDebugSerial();
 
     switch (state) {
         case IDLE:           break;
