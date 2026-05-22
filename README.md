@@ -72,10 +72,9 @@ Controller GND          ──────── Listener  GND
 ```
 [IDLE] ──── single press ────►
 
-[RED FLASH]   Ceiling flashes red at increasing speed
-               Stage 1: 2 s at 10 Hz
-               Stage 2: 2 s at 20 Hz
-               Stage 3: 2 s at 40 Hz
+[RED FLASH]   Ceiling counts down in red
+               1.5 s solid → 3 blinks → 1 s solid → 2 blinks → 1 s solid → 1 blink → 1 s solid
+               (blink pattern can be disabled via web config for a plain solid-red countdown)
 
 [GREEN LISTEN] Ceiling goes green (solid or pulsing)
                Listener is active — participant cheers
@@ -83,7 +82,7 @@ Controller GND          ──────── Listener  GND
                Duration: 6 s
 
 [RED HOLD]    Ceiling solid red, lit banks held at full brightness
-               Duration: 12 s
+               Duration: 5 s (configurable)
 
 [FADE OUT]    White banks fade one by one (Shout → Holler → Cheer)
                then ceiling fades out
@@ -98,13 +97,17 @@ Controller GND          ──────── Listener  GND
 
 ## Volume threshold logic
 
-The thresholds are **dynamic**, not fixed.
+The thresholds are **dynamic**, calibrated fresh for every participant.
 
-1. **Level 1** is a fixed dBSPL value (`FIXED_THRESHOLD_1_DB`). When the participant's volume crosses it, Bank 1 (Cheer) starts illuminating and the crossing level is recorded.
+During the red countdown the listener continuously measures the room's ambient noise and accumulates a mean dBSPL reading. When the green phase begins:
+
+1. **Level 1** = `noise_floor + NOISE_FLOOR_HEADROOM_DB`. The participant must break comfortably above the room noise to trigger it. When crossed, the crossing level is recorded and Bank 1 (Cheer) starts illuminating.
 2. **Level 2** = recorded level + `THRESHOLD_DELTA_DB`. When reached, Bank 2 (Holler) illuminates.
 3. **Level 3** = recorded level + `2 × THRESHOLD_DELTA_DB`. When reached, Bank 3 (Shout) illuminates.
 
-This means the upper two thresholds are always set relative to how loud the participant was when they first crossed the bar — giving everyone a fair but achievable challenge.
+The upper two thresholds are always set relative to how loud the participant was when they first crossed the bar — giving everyone a fair but achievable challenge. If the button is pressed before calibration has run (first boot), `FIXED_THRESHOLD_1_DB` is used as the Level 1 fallback.
+
+If the calculated steps would push Level 2 or 3 above the configured mic ceiling (`cfgMaxDbSpl`, default 115 dBSPL), the remaining headroom above the Level 1 crossing is divided proportionally across the two upper levels instead.
 
 ### Sequential display
 
@@ -118,34 +121,68 @@ When a white bank turns on it does not snap to full brightness. Instead it strob
 
 ---
 
+## Web interface
+
+Both boards broadcast a WiFi access point for 60 seconds after boot.
+
+| Board | SSID | Password | IP |
+|---|---|---|---|
+| Controller | `controller` | `wondermakr` | 192.168.4.1 |
+| Listener | `listener` | `wondermakr` | 192.168.4.1 |
+
+Browse to `192.168.4.1` to see the config page. Change values via the dropdowns and hit **Save & Reboot** — the board writes the new values to flash (NVS) and restarts. Connect again within 60 seconds to make further changes.
+
+OTA firmware upload is available at `/update` on both boards.
+
+The AP shuts itself down automatically once the 60-second window expires (or after the last connected client disconnects and the timer runs out). All experience functions work normally after the AP is off.
+
+---
+
 ## Configuration reference
+
+The values below are factory defaults. They can be changed at runtime via the web interface without reflashing.
 
 ### Controller — `src/controller/main.cpp`
 
+**Runtime (web-configurable):**
+
+| Setting | Default | Description |
+|---|---|---|
+| Countdown blinks | On | 3-2-1 blink pattern during the red countdown; disable for plain solid red |
+| Ceiling green mode | Pulsing | Solid or slow sine-wave pulse during the green phase |
+| Pulse frequency | 0.75 Hz | Speed of the sine-wave pulse |
+| Listening window | 6 s | Duration of the green (cheering) phase |
+| Sequential bank delay | 2 s | Gap between each LED bank illuminating |
+| Illuminate ramp duration | 500 ms | Time for each bank to strobe-fade up to full |
+| Illuminate strobe rate | 10 Hz | Flash frequency during the illuminate ramp |
+| Result hold (red) | 5 s | How long the ceiling stays solid red after the cheer |
+| Fade-out duration | 1 s | Per-bank fade-out time at the end of the experience |
+
+**Compile-time only (edit `main.cpp` to change):**
+
 | Define | Default | Description |
 |---|---|---|
-| `RED_FLASH_HZ_1` | `10` | Flash rate (Hz) for countdown stage 1 |
-| `RED_FLASH_HZ_2` | `20` | Flash rate (Hz) for countdown stage 2 |
-| `RED_FLASH_HZ_3` | `40` | Flash rate (Hz) for countdown stage 3 |
-| `RED_FLASH_STAGE_MS` | `2000` | Duration of each countdown stage (ms) |
-| `GREEN_LISTEN_MS` | `6000` | Listening window duration (ms) |
-| `CEILING_GREEN_PULSE` | `true` | `true` = slow sine pulse, `false` = solid green |
-| `GREEN_PULSE_HZ` | `0.75` | Pulse frequency when `CEILING_GREEN_PULSE` is true (Hz) |
-| `RED_HOLD_MS` | `12000` | Solid red hold after listening (ms) |
-| `SEQUENTIAL_DELAY_MS` | `2000` | Gap between sequential bank illuminations (ms) |
-| `ILLUMINATE_RAMP_MS` | `500` | Illuminate fade-in duration per bank (ms) |
-| `ILLUMINATE_FLASH_HZ` | `10` | Strobe rate during illuminate ramp (Hz) |
-| `FADE_DURATION_MS` | `1000` | Per-bank fade-out duration (ms) |
+| `BLINK_OFF_MS` | `100` | Dark pulse width for each blink in the countdown (ms) |
+| `BLINK_ON_MS` | `150` | On-gap between blinks within a group (ms) |
 | `EMERGENCY_FADE_MS` | `2000` | All-off fade duration on double-press (ms) |
 | `DOUBLE_PRESS_MS` | `500` | Double-press detection window (ms) |
 | `DEBOUNCE_MS` | `50` | Button debounce time (ms) |
 
 ### Listener — `src/listener/main.cpp`
 
+**Runtime (web-configurable):**
+
+| Setting | Default | Description |
+|---|---|---|
+| Fallback Level 1 threshold | 88 dBSPL | Used before the first calibration has run |
+| Noise floor headroom | 15 dB | dB above the calibrated noise floor that sets Level 1 |
+| Threshold step | 10 dB | dB above Level 1 crossing that triggers Levels 2 and 3 |
+| Mic ceiling | 115 dBSPL | Highest reliable level; Levels 2 & 3 are compressed proportionally if the normal step would exceed it |
+
+**Compile-time only:**
+
 | Define | Default | Description |
 |---|---|---|
-| `FIXED_THRESHOLD_1_DB` | `65.0` | dBSPL required to trigger Level 1 (~loud conversation) |
-| `THRESHOLD_DELTA_DB` | `5.0` | dB above Level 1 crossing for each subsequent level |
 | `INMP441_OFFSET_DB` | `120.0` | Mic sensitivity offset (94 dBSPL ref + 26 dBFS sensitivity) |
 | `SAMPLE_RATE` | `16000` | I2S sample rate (Hz) |
 | `SAMPLES_PER_BLOCK` | `512` | Samples per RMS window (~32 ms at 16 kHz) |
@@ -156,24 +193,36 @@ When a white bank turns on it does not snap to full brightness. Instead it strob
 
 The dBSPL values are approximate. The INMP441 sensitivity varies between units and the acoustic environment of the booth will affect readings significantly.
 
-To calibrate:
+To find suitable values for your installation:
 
 1. Flash only the listener firmware.
 2. Open its serial monitor at 115200 baud.
 3. Send the character `S` (start listening) from the serial monitor.
 4. The listener will print `dBSPL: XX.X` once per second.
-5. Note the ambient level and the level produced by a typical cheer.
-6. Set `FIXED_THRESHOLD_1_DB` to a value comfortably above ambient but reachable with a moderate cheer.
-7. Reflash the listener.
+5. Note the ambient level (noise floor) and the level produced by a typical cheer at the intended mic distance.
+6. Use the web interface (connect to `listener` AP within 60 s of boot) to set:
+   - **Fallback Level 1 threshold** — a value comfortably above your measured ambient level.
+   - **Noise floor headroom** — how many dB of headroom above the auto-calibrated noise floor should be required to trigger Level 1 (default 15 dB works well for a booth).
+   - **Threshold step** — the dB gap between levels (default 10 dB gives a reasonable spread across a typical shout range).
+   - **Mic ceiling** — the highest dBSPL the microphone can reliably measure (default 115 dBSPL). Only needs changing if your unit measures noticeably higher or lower peaks.
 
-When a threshold is crossed, the listener also prints which level was hit and what dynamic thresholds were calculated, e.g.:
+During normal operation the noise floor is measured automatically during each red countdown, so the threshold adapts to the room without manual intervention.
+
+When a threshold is crossed, the listener prints which level was hit and what dynamic thresholds were calculated:
 
 ```
-dBSPL: 58.3
-dBSPL: 59.1
-Level 1 hit at 67.4 dB  |  T2=72.4  T3=77.4
-Level 2 hit at 73.1 dB
-Level 3 hit at 78.2 dB
+Noise floor: 62.4 dB  →  Threshold 1: 77.4 dB
+dBSPL: 65.1
+dBSPL: 66.8
+Level 1 at 79.2 dB  |  T2=89.2  T3=99.2
+Level 2 at 90.1 dB
+Level 3 at 100.3 dB
+```
+
+If the steps were compressed to fit below the mic ceiling, the Level 1 line will include `[compressed]`:
+
+```
+Level 1 at 108.3 dB  |  T2=110.5  T3=112.7 [compressed]
 ```
 
 ---
@@ -184,7 +233,8 @@ Single ASCII characters, no framing, 115200 8N1.
 
 | Direction | Byte | Meaning |
 |---|---|---|
-| Controller → Listener | `S` | Start listening (sent when green phase begins) |
+| Controller → Listener | `C` | Start noise floor calibration (sent at the start of the red countdown) |
+| Controller → Listener | `S` | Finalise calibration and start listening (sent when green phase begins) |
 | Controller → Listener | `R` | Reset (sent on emergency stop or between guests) |
 | Listener → Controller | `1` | Level 1 threshold crossed |
 | Listener → Controller | `2` | Level 2 threshold crossed |
@@ -209,6 +259,8 @@ pio run -e listener -t upload
 # Open serial monitor for listener calibration
 pio device monitor -e listener
 ```
+
+Built binaries land at `.pio/build/controller/firmware.bin` and `.pio/build/listener/firmware.bin` and can be uploaded via the `/update` OTA page on each board.
 
 ---
 
